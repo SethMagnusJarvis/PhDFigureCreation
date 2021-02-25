@@ -1,0 +1,508 @@
+---
+title: "C9Orf72 Mutant Mice"
+author: "Seth Jarvis"
+date: "14/12/2020"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(patchwork)
+library(ggplot2)
+```
+
+## Introduction
+Mutations in the Gene C9orf72 is a gene which produces the protein of the same name have been linked to both frontotemporal dementia (FTD) and of amyotrophic lateral sclerosis (ALS).  We have aimed to see the effect that inserting transgene repeats into C9orf72 into mice would have on gene expression within the mice. These sequences are henceforth known as (GR)400 and (PR)400. Both result in non-functional copies of the gene and are similar to mutations observed in human patients. We have sequenced mice spinal cords in both wildtype and mutant samples in both 6 and 12 month old mice..
+*I think this is how it works but no matter what this section will need a lot of information from Carmelo*
+
+## Merge Files (This section may be dropped)
+
+First I collated all of the exons from each gene and combined them into single per gene reads, this produced the level of expression for each gene in each sample. *This section is probably a little inside baseball and isn't best practice. We should probably be using the gene level version of the counts but Vincent setup the pipeline to do this to allow for easier looks at splicing etc. I may remove it if it's okay.*
+
+```{r import files, echo=FALSE, message=FALSE}
+MergedGrouped <- read_csv("AdrianC9GeneReadsAll.csv")
+BMOutput <- read_csv("AdrianC9MouseGenes.csv")
+```
+
+```{r Merge Files, eval=FALSE}
+#Retrieve all of the exon count files and combine them into a single file
+filenames <- list.files("Counts", pattern="*_keep_dups.txt", full.names=TRUE)
+ldf <- lapply(filenames, read.table)
+Merged <- ldf %>% purrr::reduce(full_join, by = "V1")
+
+names(Merged)[1] <- "EnsemblID"
+names(Merged)[2:31] <- substr(filenames, 8, 20)
+
+#group all of the reads for different exons into a single file
+MergedGrouped <- Merged %>% 
+  separate(EnsemblID, c("EnsemblID", NA), sep = ':') %>%
+  group_by(EnsemblID) %>%
+  summarise_all(funs(sum))
+```
+
+## Remove corrupted samples 
+Based on PCR results we suspected that several of our samples were corrupted. We searched for the presence of the sequences which were exclusive to each type of mutant to see if any of the samples had sequences present in their fastq files which shouldn't have been. The results can be seen in the table below. The most obviously corrupted samples were two of the wildtype mice and one of the 6 Month PR samples, so they were removed from future analysis. Specifically the samples *NM8082_800555*, *NM8084_800973*, and *NM8093_793422* were removed.*NM8078_797806* did seem to have small levels of these sequences present, but these were not observed in the PCR and removal of this sample did not seem to have a substantial effect on differential expression so it was removed. 
+
+```{r Show New, message=FALSE, echo=FALSE }
+SequencePresence <- read_csv("SequencePresenceResults.csv")
+
+knitr::kable(SequencePresence)
+```
+
+
+
+```{r Filter Reads, message=FALSE}
+Support <- read_csv("AdrianC9SupportUpdated.csv") %>% filter(Sample != "NM8082_800555" & Sample != "NM8084_800973" & Sample != "NM8093_793422")
+Reads <- dplyr::select(MergedGrouped, EnsemblID, Support$Sample) %>% filter(grepl("ENSMUSG", EnsemblID)) 
+SixMonthSupport <- filter(Support, type_3 == "6M")
+TwelveMonthSupport <- filter(Support, type_3 == "12M")
+```
+
+## Make PCAs
+We first made a PCA which combined all samples together. The most obvious differences seemed to be between the 6 month and 12 month samples.
+
+```{r PCAs, echo=FALSE}
+Reads$RowSum <- Reads %>% rowwise() %>% dplyr::select(-EnsemblID) %>% rowSums()
+PCAReads <- Reads %>% filter(!RowSum == 0) %>% dplyr::select(-RowSum) 
+PCAReadsAll <- column_to_rownames(PCAReads, "EnsemblID") 
+PCA <- prcomp(t(PCAReadsAll), scale=TRUE)
+PCAData <- as.data.frame(PCA$x) %>% 
+  rownames_to_column("Sample") %>%
+  left_join(Support, by="Sample") %>% 
+  unite(SampleType, c("condition_A", "type_3")) 
+
+
+
+PCAPlotAll <- ggplot(PCAData, aes(x=PC1,y=PC2)) + geom_point(aes(color=SampleType), size=4) +
+  theme_bw(base_size=32) + 
+  theme(legend.position="top") + theme(
+  legend.title = element_text(color = "blue", size = 14),
+  legend.text = element_text(color = "red", size = 10),
+  axis.text = element_text(size = 10),
+  axis.title = element_text(size = 14)
+  )
+
+PCAPlotAll
+```
+
+We then made PCAs for our 6 Month and 12 month sample. In both cases the mutants tended to group relatively closely together with some obvious exceptions while the wildtypes were less homogeneously distributed. This does suggest some differences between the wildtypes and mutants in both age groups, although this was more notable in the 12 month samples than in the 6 month ones (this will be validated later on).
+
+```{r 6 Month PCAs, echo=FALSE}
+PCAReads6Month <- dplyr::select(PCAReads, EnsemblID, SixMonthSupport$Sample) %>% column_to_rownames("EnsemblID")
+PCA6Month <- prcomp(t(PCAReads6Month))
+PCAData6Month <- as.data.frame(PCA6Month$x) %>% 
+  rownames_to_column("Sample") %>%
+  left_join(Support, by="Sample") %>% 
+  unite(SampleType, c("condition_A", "type_3")) 
+PCAPlot6Months <- ggplot(PCAData6Month, aes(x=PC1,y=PC2)) + geom_point(aes(color=SampleType), size=4) +
+  theme_bw(base_size=32) + 
+  theme(legend.position="top") + theme(
+  legend.title = element_text(color = "blue", size = 10),
+  legend.text = element_text(color = "red", size = 8),
+  legend.box="vertical",
+  axis.text = element_text(size = 8),
+  axis.title = element_text(size = 10)
+  )
+```
+
+
+
+```{r 12 Month PCAs, echo=FALSE}
+PCAReads12Month <- dplyr::select(PCAReads, EnsemblID, TwelveMonthSupport$Sample) %>% column_to_rownames("EnsemblID")
+PCA12Month <- prcomp(t(PCAReads12Month))
+PCAData12Month <- as.data.frame(PCA12Month$x) %>% 
+  rownames_to_column("Sample") %>%
+  left_join(Support, by="Sample") %>% 
+  unite(SampleType, c("condition_A", "type_3")) 
+PCAPlot12Months <- ggplot(PCAData12Month, aes(x=PC1,y=PC2)) + geom_point(aes(color=SampleType), size=4) +
+  theme_bw(base_size=32) + 
+  theme(legend.position="top") + theme(
+  legend.title = element_text(color = "blue", size = 10),
+  legend.text = element_text(color = "red", size = 8),
+  legend.box="vertical", 
+  axis.text = element_text(size = 8),
+  axis.title = element_text(size = 10)
+  )
+
+
+PCAPlot6Months + PCAPlot12Months
+```
+
+
+## Differential Expression
+We separated our samples both age and mutation and performed differential expression using DESeq2 (via the enrichment browser package).
+
+
+```{r Differential Expression Function, message=FALSE}
+library(EnrichmentBrowser)
+MakeDE <- function(SupportData, ReadData, BiomOutput){
+  #Format files and select only the reads wanted
+  colnames(SupportData)[2] <- "GROUP"
+  FiltReads <- dplyr::select(ReadData, EnsemblID, SupportData$Sample) %>% filter(grepl("ENSMUSG", EnsemblID)) 
+  FiltReads <- FiltReads %>% column_to_rownames("EnsemblID")
+  
+  #Run differential expression
+  SEData <- SummarizedExperiment(list(counts=as.matrix(FiltReads)), colData = SupportData)
+  SEData$GROUP = ifelse(SupportData$GROUP == "WT", 0, 1)
+  SEData <- deAna(SEData, de.method = "DESeq2")
+  
+  #Retrieve results of differential expression
+  Results = as.data.frame(rowData(SEData)) %>%
+    rownames_to_column("gene_id") %>% left_join(BiomOutput, by = c("gene_id"="ensembl_gene_id")) %>% 
+    arrange(ADJ.PVAL)
+  
+  return(Results)
+}
+```
+
+In order to add human readable gene names to our results we use biomart to get a list of the Ensembl IDs which is what we use and their human readable gene names.
+
+```{r BiomarT checkout, eval=FALSE}
+library(biomaRt)
+mart <- useMart("ensembl")
+mart <- useDataset("mmusculus_gene_ensembl", mart)
+mart<-useMart(biomart = "ENSEMBL_MART_ENSEMBL", 
+              dataset = "mmusculus_gene_ensembl", 
+              host = "www.ensembl.org")
+
+
+#Set columns you to retrieve from biomart
+attributes <- c("ensembl_gene_id", "gene_biotype", "external_gene_name", 'entrezgene_id')
+#Set column to filter by
+filters <- "ensembl_gene_id"
+
+BMOutput <- getBM(attributes = attributes, filters = filters, values=Reads$EnsemblID, mart=mart)
+```
+
+```{r Dataset R, message=FALSE}
+SupportPR6M <- dplyr::select(Support, Sample, condition_B, type_3) %>% drop_na()
+SupportGR6M <- dplyr::select(Support, Sample, condition_C, type_3) %>% drop_na()
+SupportPR12M <- dplyr::select(Support, Sample, condition_D, type_3) %>% drop_na()
+SupportGR12M <- dplyr::select(Support, Sample, condition_E, type_3) %>% drop_na()
+
+PR6MDE <- MakeDE(SupportPR6M, Reads, BMOutput)
+GR6MDE <- MakeDE(SupportGR6M, Reads, BMOutput)
+PR12MDE <- MakeDE(SupportPR12M, Reads, BMOutput)
+GR12MDE <- MakeDE(SupportGR12M, Reads, BMOutput)
+```
+
+The number of genes found to be significant in both of our 6 month datasets was relatively minimal, only resulting in 2 or so differentially expressed genes per dataset. C9orf72 was differentially expressed in PR and Egf was differentially expressed in both. The 12 months had ~400 and ~1500 differentially expressed genes respectively. The phenotype is much stronger at this age so that is not unexpected although we were not expecting as few genes to be differentially expressed in the 6 month samples as were.
+
+Then we grouped our samples by mutation and by age. There are no significantly differentially expressed genes when grouping all GR samples together and 4 when grouping all PR samples together one of which was C9Orf72. When grouping by age, 2 genes were differentially expressed when combing 6 month samples (Egf and Ngf), and 1781 were found when merging the 12 month samples.  
+
+```{r Grouped Datasets, message=FALSE}
+#Make Support Files
+SixMonthSupport <- filter(Support, type_3 == "6M") %>% dplyr::select(Sample, condition_A, type_3)
+SixMonthSupport$condition_A <- ifelse(SixMonthSupport$condition_A == "WT", "WT", "Mut")
+TwelveMonthSupport <- filter(Support, type_3 == "12M") %>% dplyr::select(Sample, condition_A, type_3)
+TwelveMonthSupport$condition_A <- ifelse(TwelveMonthSupport$condition_A == "WT", "WT", "Mut")
+GRSupport <- filter(Support, condition_A != "(PR)400") %>% dplyr::select(Sample, condition_A, type_3)
+PRSupport <- filter(Support, condition_A != "(GR)400" )%>% dplyr::select(Sample, condition_A, type_3)
+
+
+SixMonthDEGrouped <- MakeDE(SixMonthSupport, Reads, BMOutput)
+TwelveMonthDEGrouped <- MakeDE(TwelveMonthSupport, Reads, BMOutput)
+
+GRDEGrouped <- MakeDE(GRSupport, Reads, BMOutput)
+PRDEGrouped <- MakeDE(PRSupport, Reads, BMOutput)
+```
+
+
+
+```{r, message=FALSE, eval=FALSE, echo=FALSE}
+#Not currently using this, keeping it here in case I decide to.
+MakeDEGroup <- function(SupportData, ReadData){
+  colnames(SupportData)[2] <- "GROUP"
+  colnames(SupportData)[3] <- "BLOCK"
+  FiltReads <- dplyr::select(ReadData, EnsemblID, SupportData$Sample) %>% filter(grepl("ENSMUSG", EnsemblID)) 
+  FiltReads <- FiltReads %>% column_to_rownames("EnsemblID")
+  
+  SEData <- SummarizedExperiment(list(counts=as.matrix(FiltReads)), colData = SupportData)
+  SEData$GROUP = ifelse(SupportData$GROUP == "WT", 0, 1)
+  SEData <- deAna(SEData, de.method = "DESeq2")
+  
+  Results = as.data.frame(rowData(SEData)) %>%
+    rownames_to_column("gene_id")
+  
+  return(Results)
+}
+
+#Make Support Files
+SixMonthSupport <- filter(Support, type_3 == "6M")
+SixMonthSupport$Condition_1 <- SixMonthSupport$condition_A
+SixMonthSupport$condition_A <- ifelse(SixMonthSupport$condition_A == "WT", "WT", "Mut")
+TwelveMonthSupport <- filter(Support, type_3 == "12M")
+TwelveMonthSupport$Condition_1 <- TwelveMonthSupport$condition_A
+TwelveMonthSupport$condition_A <- ifelse(TwelveMonthSupport$condition_A == "WT", "WT", "Mut")
+
+GRSupport <- filter(Support, condition_A != "(PR)400")
+PRSupport <- filter(Support, condition_A != "(GR)400")
+
+
+SixMonthDEGrouped <- MakeDE(SixMonthSupport, Reads)
+TwelveMonthDEGrouped <- MakeDE(TwelveMonthSupport, Reads)
+
+GRDEGrouped <- MakeDE(GRSupport, Reads)
+PRDEGrouped <- MakeDE(PRSupport, Reads)
+```
+
+## Heatmaps (This section may be dropped. It doesn't look great.)
+We produced heatmaps looking at the expression of each sample. We filtered so we were only using genes which were found to be significant in the relevant 12 month sample and was in the top 99% most variant genes. Unsurprisingly the 12 month samples group together, In the 6 months samples we do see some grouping of samples but mutants and wildtypes, but it is not as strong, partially because of WT_8080 which appears to be moderately seperate from the existing samples.
+
+```{r DESeq2 Normalised Heatmaps, echo=FALSE, message=FALSE}
+library(DESeq2)
+library(gridExtra)
+library(pheatmap)
+
+RenamedSupport <- read_csv("EasyNameSupport.csv")
+
+RenamedRawReads <- dplyr::select(Reads, EnsemblID, RenamedSupport$Sample) %>% filter(grepl("ENSMUSG", EnsemblID)) 
+colnames(RenamedRawReads)[2:28] <- RenamedSupport$UpdatedName
+
+#Make function to produce log and non-log heatmaps
+DESeqHeatmap <- function (HeatReads, HeatSupport, DE, QuanFilt){
+  #select only the reads in the relevant support file
+  SelectedReads <- dplyr::select(HeatReads, EnsemblID, HeatSupport$UpdatedName) %>% filter(grepl("ENSMUSG", EnsemblID))
+  
+  RowVariable <- SelectedReads %>% mutate(RowVars = rowVars(as.matrix(SelectedReads[,2:ncol(SelectedReads)]))) %>% 
+  dplyr::select("EnsemblID", "RowVars") %>% filter(EnsemblID %in% DE$gene_id ) %>% 
+    filter(quantile(RowVars, QuanFilt)<RowVars)
+    
+  SelectedReads <- SelectedReads %>% column_to_rownames("EnsemblID")
+  
+  #Change sample names so they're more human readable and it's immediately obvious which is WT and which is mutant
+  coldata <- data.frame(sample = HeatSupport$UpdatedName)
+  coldata$Condition <- ifelse(HeatSupport[,3] == "WT", "WT","Mut")
+  row.names(coldata) <- coldata$sample
+  coldata$sample <- NULL
+  coldata$Condition <- factor(coldata$Condition,levels=c("WT","Mut"))
+  
+  #Get Normalised Reads from deseq
+  formula0 = as.formula("~ 1") 
+  CDS <- DESeqDataSetFromMatrix(countData = SelectedReads, colData = coldata, design = as.formula("~ Condition"))
+  CDS <- estimateSizeFactors(CDS)
+
+  #Extract normalised reads
+  normalized_counts <- as.data.frame(counts(CDS, normalized=TRUE)) %>% rownames_to_column("EnsemblID")
+  
+  #Filter to only use the significant reads
+  SigReads <- filter(normalized_counts,  EnsemblID %in% RowVariable$EnsemblID ) %>% na.omit()%>%
+    `row.names<-`(., NULL) %>% column_to_rownames("EnsemblID")
+
+  pheatmap(log2(SigReads), show_rownames=F, silent=TRUE, legend = FALSE, fontsize = 8, cluster_rows = F, cellheight = 0.5)
+
+}
+
+SupportPR6M <- dplyr::select(RenamedSupport, Sample, UpdatedName, condition_B, type_3) %>% drop_na()
+SupportGR6M <- dplyr::select(RenamedSupport, Sample, UpdatedName, condition_C, type_3) %>% drop_na()
+SupportPR12M <- dplyr::select(RenamedSupport, Sample, UpdatedName, condition_D, type_3) %>% drop_na()
+SupportGR12M <- dplyr::select(RenamedSupport, Sample, UpdatedName, condition_E, type_3) %>% drop_na()
+
+grid.arrange(grobs = list(DESeqHeatmap(RenamedRawReads, SupportPR6M, PR12MDE, 0.99)[[4]], 
+                          DESeqHeatmap(RenamedRawReads, SupportGR6M, GR12MDE, 0.99)[[4]], 
+                          DESeqHeatmap(RenamedRawReads, SupportPR12M, PR12MDE, 0.99)[[4]], 
+                          DESeqHeatmap(RenamedRawReads, SupportGR12M, GR12MDE, 0.99)[[4]]), 
+             layout_matrix = rbind(c(1, 2),
+                                   c(1,2),
+                                   c(1,2),
+                                   c(NA, NA),
+                                   c(NA, NA),
+                                   c(3,4),
+                                   c(3,4),
+                                   c(3,4))
+             )
+
+```
+
+## Volcano Plots
+```{r Volcano Plots, message=FALSE, warning=FALSE}
+library(EnhancedVolcano)
+
+DE <- PR6MDE
+
+HomemadeVolcano <- function(DE){
+  DE$threshold <- DE$ADJ.PVAL < 0.05
+  DEVolcano <- ggplot(DE) +
+        geom_point(aes(x=FC, y=-log10(PVAL), colour=threshold)) +
+        xlab("log2 fold change") + 
+        ylab("-log10 adjusted p-value") +
+        #scale_y_continuous(limits = c(0,50)) +
+        theme(legend.position = "none",
+              plot.title = element_text(size = rel(1.5), hjust = 0.5),
+              axis.title = element_text(size = rel(1.25)))  
+}
+
+VolcanoPR6M <- HomemadeVolcano(PR6MDE) + ggtitle("PR 6 Month Volcano")
+VolcanoGR6M <- HomemadeVolcano(GR6MDE) + ggtitle("GR 6 Month Volcano")
+VolcanoPR12M <- HomemadeVolcano(PR12MDE) + ggtitle("PR 12 Month Volcano")
+VolcanoGR12M <- HomemadeVolcano(GR12MDE) + ggtitle("GR 12 Month Volcano")
+
+VolcanoPR6M+VolcanoGR6M+VolcanoPR12M+VolcanoGR12M
+
+```
+
+## Differential Expression Venn diagrams
+We wanted to look at the overlap between genes which were differentially expressed in the 12 month old datasets of PR and GR. The majority of genes which were found to be significantly differentially expressed in PR were also found in GR which suggests there is unsurprisingly significant overlap between the action of the two transgenes.
+
+```{r}
+library(limma)
+ListCompare <- function(DE1, DE2){
+  DE1SigList <- DE1 %>% filter(ADJ.PVAL < 0.05) %>% dplyr::select(gene_id)
+  DE2SigList <- DE2 %>% filter(ADJ.PVAL < 0.05) %>% dplyr::select(gene_id)
+  ids = sort(unique(c(as.character(unlist(DE1SigList)),  as.character(unlist(DE2SigList) ))))
+  counts = matrix(0, nrow=length(ids), ncol=2)
+  for(i in 1:length(ids)){
+    counts[i, 1] = ids[i] %in% unlist(DE1SigList)
+    counts[i, 2] = ids[i] %in% unlist(DE2SigList)
+  }
+  colnames(counts) = c("PR", "GR")
+  row.names(counts) = ids
+  
+  return(as.data.frame(counts))
+}
+
+PRGRComp <- ListCompare(PR12MDE, GR12MDE)
+
+vennDiagram(PRGRComp) + title("Significant PR and GR gene Venn Diagram")
+```
+
+
+## Dot plots in C9orf72
+We were surprised that C9orf72 was not found to be significant in  either of our GR datasets so wished to plot the expression against wildtype. As can be seen below, there is an obvious difference in overall expression in our PR samples at both timepoints (although less so at 12 months) and while there is some in the GR, it isn't as drastic as we expected and doesn't come close to clearing the significance threshold.
+
+```{r, message=FALSE, warning=FALSE}
+SixMonthSupport <- filter(Support, type_3 == "6M") %>% dplyr::select(Sample, condition_A)
+TwelveMonthSupport <- filter(Support, type_3 == "12M")  %>% dplyr::select(Sample, condition_A)
+
+SixFiltReads <- dplyr::select(Reads, EnsemblID, SixMonthSupport$Sample) %>% 
+  filter(EnsemblID == "ENSMUSG00000028300") %>% t() 
+TwelveFiltReads <- dplyr::select(Reads, EnsemblID, TwelveMonthSupport$Sample) %>% 
+  filter(EnsemblID == "ENSMUSG00000028300") %>% t()
+
+SixFiltReadsC9 <- as.data.frame(SixFiltReads) %>% rownames_to_column("Sample") %>% 
+  left_join(SixMonthSupport, by = c("Sample"="Sample")) %>% dplyr::select(Sample, V1, condition_A) %>%
+  rename("V1" = "ReadsC9")
+SixFiltReadsC9 <- SixFiltReadsC9[-1,]
+SixFiltReadsC9$ReadsC9 <- as.numeric(levels(SixFiltReadsC9$ReadsC9))[SixFiltReadsC9$ReadsC9]
+
+TwelveFiltReadsC9 <- as.data.frame(TwelveFiltReads) %>% rownames_to_column("Sample") %>% 
+  left_join(TwelveMonthSupport, by = c("Sample"="Sample")) %>% dplyr::select(Sample, V1, condition_A) %>%
+  rename("V1" = "ReadsC9")
+TwelveFiltReadsC9 <- TwelveFiltReadsC9[-1,]
+TwelveFiltReadsC9$ReadsC9 <- as.numeric(levels(TwelveFiltReadsC9$ReadsC9))[TwelveFiltReadsC9$ReadsC9]
+
+SixFiltScatter<-ggplot(SixFiltReadsC9, aes(x=condition_A, y=ReadsC9)) + 
+  geom_dotplot(binaxis='y', stackdir='center') + ggtitle("6 Month C9 dot plot")
+
+TwelveFiltScatter<-ggplot(TwelveFiltReadsC9, aes(x=condition_A, y=ReadsC9)) + 
+  geom_dotplot(binaxis='y', stackdir='center') + ggtitle("12 Month C9 dot plot")
+
+SixFiltScatter+TwelveFiltScatter
+```
+
+```{r, echo=FALSE, message=FALSE}
+BMOutput <- read_csv("BioMarTMouseWEntrez.csv")
+```
+
+
+## GO Terms (with network)
+We produced molecular function GO term networks for both datasets which can be seen below.
+
+```{r, message=FALSE}
+library(topGO)
+PR12MDEEntrez <- left_join(PR12MDE, BMOutput, by=c("gene_id"="ensembl_gene_id"))
+GR12MDEEntrez <- left_join(GR12MDE, BMOutput, by=c("gene_id"="ensembl_gene_id"))
+
+MakeGoMap <- function(DEEntrez){
+  tmp <- DEEntrez %>% drop_na("entrezgene_id") 
+  tmp <- filter(tmp, ADJ.PVAL < 0.05)
+  geneList <- tmp$PVAL
+  names(geneList) <- tmp$entrezgene_id
+
+  GOdata <- new("topGOdata",
+              ontology = "MF",
+              allGenes = geneList,
+              geneSelectionFun = function(x)x,
+              annot = annFUN.org , mapping = "org.Mm.eg.db")
+
+  resultKS <- runTest(GOdata, algorithm = "weight01", statistic = "ks")
+  tab <- GenTable(GOdata, raw.p.value = resultKS, topNodes = length(resultKS@score), numChar = 120)
+
+  par(cex = 0.3)
+  showSigOfNodes(GOdata, score(resultKS), firstSigNodes = 4, useInfo = "def")
+}
+
+GOPR12 <- MakeGoMap(PR12MDEEntrez)
+GOGR12 <- MakeGoMap(GR12MDEEntrez)
+```
+
+## Kegg Pathways (likely to remove)
+*As I think I said, these looked terrible since they use fold change and I don't know that they're useful.*
+```{r, message=FALSE, eval = FALSE}
+library(KEGGREST)
+library(pathview)
+TopTwoKegg <- function(DEEntrez){
+  tmp <- DEEntrez %>% drop_na("entrezgene_id") 
+  tmp <- filter(tmp, ADJ.PVAL < 0.05)
+  geneList <- tmp$PVAL
+  names(geneList) <- tmp$entrezgene_id
+  
+  pathways.list <- keggList("pathway", "mmu")
+  pathway.codes <- sub("path:", "", names(pathways.list))
+  genes.by.pathway <- sapply(pathway.codes,
+                             function(pwid){
+                               pw <- keggGet(pwid)
+                               if (is.null(pw[[1]]$GENE)) return(NA)
+                               pw2 <- pw[[1]]$GENE[c(TRUE,FALSE)] 
+                               pw2 <- unlist(lapply(strsplit(pw2, split = ";", fixed = T), function(x)x[1]))
+                               return(pw2)
+                             }
+  )
+  
+  pVals.by.pathway <- t(sapply(names(genes.by.pathway),
+                               function(pathway) {
+                                 pathway.genes <- genes.by.pathway[[pathway]]
+                                 list.genes.in.pathway <- intersect(names(geneList), pathway.genes)
+                                 list.genes.not.in.pathway <- setdiff(names(geneList), list.genes.in.pathway)
+                                 scores.in.pathway <- geneList[list.genes.in.pathway]
+                                 scores.not.in.pathway <- geneList[list.genes.not.in.pathway]
+                                 if (length(scores.in.pathway) > 0){
+                                   p.value <- wilcox.test(scores.in.pathway, scores.not.in.pathway, 
+                                                          alternative = "less")$p.value
+                                 } else{
+                                   p.value <- NA
+                                 }
+                                 return(c(p.value = p.value, Annotated = length(list.genes.in.pathway)))
+                               }
+  ))
+  
+  outdat <- data.frame(pathway.code = rownames(pVals.by.pathway))
+  outdat$pathway.name <- pathways.list[paste0("path:",outdat$pathway.code)]
+  outdat$p.value <- pVals.by.pathway[,"p.value"]
+  outdat$Annotated <- pVals.by.pathway[,"Annotated"]
+  outdat <- outdat[order(outdat$p.value),]
+  head(outdat)
+  
+  foldChangeList <- tmp$FC
+  names(foldChangeList) <- tmp$entrezgene_id
+  head(geneList)
+  
+  Pathway1 <- pathview(gene.data  = foldChangeList,
+                       pathway.id = outdat$pathway.code[1],
+                       species    = "mmu",
+                       limit      = list(gene=max(abs(foldChangeList)), cpd=1))
+  
+  Pathway2 <- pathview(gene.data  = foldChangeList,
+                       pathway.id = outdat$pathway.code[2],
+                       species    = "mmu",
+                       limit      = list(gene=max(abs(foldChangeList)), cpd=1))
+}
+
+TopTwoKegg(PR12MDEEntrez)
+TopTwoKegg(GR12MDEEntrez)
+```
